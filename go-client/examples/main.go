@@ -20,6 +20,13 @@ func fetchStream(ctx context.Context, proxyURL string, streamID string, saveScre
 
 	client := hikws.NewHikMediaClient(config)
 
+	// Register OnSDP callback to get structured SDP information
+	var sdpInfo *hikws.SDPInfo
+	client.OnSDP = func(info *hikws.SDPInfo) {
+		sdpInfo = info
+		log.Printf("Stream %s: SDP received:\n%s", streamID, info.String())
+	}
+
 	err = client.Connect(ctx)
 	if err != nil {
 		log.Printf("Stream %s: Connect err: %v\n", streamID, err)
@@ -41,8 +48,17 @@ func fetchStream(ctx context.Context, proxyURL string, streamID string, saveScre
 
 	var saver *hikws.VideoSaver
 	if saveScreenshots {
-		// Launch saver that saves 1 frame every second
-		saver, err = hikws.NewVideoSaver(ctx, "./output", streamID, 1)
+		// Launch saver with format hint and JPEG callback
+		// format: "mpegps" for MPEG-PS streams, "h264"/"h265" for raw NAL streams
+		// onJPEG: callback for each decoded JPEG frame (useful for real-time AI detection)
+		format := "" // will be detected from first frame
+		onJPEG := func(jpegData []byte) {
+			// This callback fires for every decoded JPEG frame.
+			// In production, you would send this to a YOLO detector:
+			//   result := yoloEngine.Detect(jpegData, streamID, 0.5)
+			// For demo, just log the first frame size.
+		}
+		saver, err = hikws.NewVideoSaver(ctx, "./output", streamID, 1, format, onJPEG)
 		if err != nil {
 			log.Printf("Stream %s: Warning failed to start video saver: %v\n", streamID, err)
 		} else {
@@ -52,6 +68,8 @@ func fetchStream(ctx context.Context, proxyURL string, streamID string, saveScre
 
 	videoFrames := 0
 	videoBytes := 0
+	spsInjected := false
+
 	client.OnVideoData = func(data []byte) {
 		videoFrames++
 		videoBytes += len(data)
@@ -60,6 +78,22 @@ func fetchStream(ctx context.Context, proxyURL string, streamID string, saveScre
 		} else if videoFrames == 6 {
 			log.Printf("Stream %s: ... (suppressing further logs)\n", streamID)
 		}
+
+		// Inject SPS/PPS before the first frame if available from SDP
+		if saver != nil && !spsInjected && sdpInfo != nil {
+			spsInjected = true
+			// For MPEG-PS streams, inject SPS/PPS as MPEG-PS PES packet
+			if mpegPES := sdpInfo.BuildMPEGPSPES(); mpegPES != nil {
+				saver.Write(mpegPES)
+				log.Printf("Stream %s: Injected SPS/PPS as MPEG-PS PES (%d bytes)\n", streamID, len(mpegPES))
+			}
+			// For raw H.264 streams, inject SPS/PPS in Annex B format
+			if annexB := sdpInfo.BuildAnnexBSPSPPS(); annexB != nil {
+				saver.Write(annexB)
+				log.Printf("Stream %s: Injected SPS/PPS as Annex B (%d bytes)\n", streamID, len(annexB))
+			}
+		}
+
 		if saver != nil {
 			_, _ = saver.Write(data)
 		}
@@ -71,6 +105,14 @@ func fetchStream(ctx context.Context, proxyURL string, streamID string, saveScre
 
 	// Blocks until ctx completes or session drops
 	client.Run(ctx)
+
+	// Print final SDP info if available
+	if sdpInfo != nil {
+		log.Printf("Stream %s: SDP summary: %s %s/%dHz, SPS=%d bytes, PPS=%d bytes\n",
+			streamID, sdpInfo.VideoCodec, sdpInfo.VideoProfile,
+			sdpInfo.VideoClockRate, len(sdpInfo.SPS), len(sdpInfo.PPS))
+	}
+
 	log.Printf("Stream %s: ended. Total: %d frames, %d bytes\n", streamID, videoFrames, videoBytes)
 }
 

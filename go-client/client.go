@@ -20,10 +20,18 @@ type HikMediaClient struct {
 	serverPKD  string
 	serverRand string
 
+	// SDP holds the raw SDP content received from the server after a
+	// successful realplay request. Use ParseSDP() to extract structured
+	// information (codec, SPS/PPS, etc.).
+	SDP string
+
 	// Callbacks
 	OnVideoData func([]byte)
 	OnAudioData func([]byte)
 	OnError     func(error)
+	// OnSDP is called when the server returns an SDP answer after realplay.
+	// The SDPInfo provides parsed codec parameters, SPS/PPS NAL units, etc.
+	OnSDP func(info *SDPInfo)
 
 	mu sync.Mutex
 }
@@ -157,9 +165,16 @@ func (c *HikMediaClient) Run(ctx context.Context) error {
 					if c.OnError != nil {
 						c.OnError(fmt.Errorf("%s", errMsg))
 					}
-				} else if sdp, ok := resp["sdp"].(string); ok && sdp != "" {
-					log.Printf("realplay OK, SDP length=%d", len(sdp))
+			} else if sdp, ok := resp["sdp"].(string); ok && sdp != "" {
+				log.Printf("realplay OK, SDP length=%d", len(sdp))
+				c.SDP = sdp // Store SDP for external access
+				// Parse and notify via callback
+				if c.OnSDP != nil {
+					if info := ParseSDP(sdp); info != nil {
+						c.OnSDP(info)
+					}
 				}
+			}
 			}
 
 		} else if msgType == websocket.BinaryMessage {

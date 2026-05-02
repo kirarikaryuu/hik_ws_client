@@ -17,13 +17,19 @@ import (
 // into an MJPEG pipe, then periodically saves JPEG frames to disk.
 //
 // Matches the Python play.py approach:
-//   ffmpeg -hide_banner -sn -an -i pipe:0 -f image2pipe -vcodec mjpeg -v error pipe:1
+//
+//	ffmpeg -hide_banner -sn -an -i pipe:0 -f image2pipe -vcodec mjpeg -v error pipe:1
 type VideoSaver struct {
 	pipeWriter *io.PipeWriter
 	cmd        *exec.Cmd
 	Prefix     string
 	OutputDir  string
 	Interval   time.Duration
+
+	// Format is a video codec format hint (e.g. "mpegps", "h264", "h265").
+	// It can be used by callers to decide how to inject SPS/PPS or other
+	// codec-specific parameters before the first video frame.
+	Format string
 
 	stopOnce sync.Once
 	doneCh   chan struct{}
@@ -37,7 +43,18 @@ type VideoSaver struct {
 }
 
 // NewVideoSaver starts an ffmpeg process to decode video and save screenshots.
-func NewVideoSaver(ctx context.Context, outputDir, prefix string, intervalSeconds int) (*VideoSaver, error) {
+//
+// Parameters:
+//   - ctx: context for cancellation
+//   - outputDir: directory to save JPEG screenshots
+//   - prefix: filename prefix for saved screenshots
+//   - intervalSeconds: minimum interval between saved frames (in seconds)
+//   - format: optional video codec format hint (e.g. "mpegps", "h264", "h265").
+//     Pass empty string "" if unknown. Used by callers to decide SPS/PPS injection strategy.
+//   - onJPEG: optional callback invoked for every decoded JPEG frame.
+//     Useful for real-time processing (e.g. YOLO detection) without saving to disk.
+//     Pass nil if not needed.
+func NewVideoSaver(ctx context.Context, outputDir, prefix string, intervalSeconds int, format string, onJPEG func([]byte)) (*VideoSaver, error) {
 	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
 		return nil, fmt.Errorf("failed to create output dir: %w", err)
 	}
@@ -78,12 +95,14 @@ func NewVideoSaver(ctx context.Context, outputDir, prefix string, intervalSecond
 	interval := time.Duration(intervalSeconds) * time.Second
 
 	vs := &VideoSaver{
-		pipeWriter: writer,
-		cmd:        cmd,
-		Prefix:     prefix,
-		OutputDir:  outputDir,
-		Interval:   interval,
-		doneCh:     doneCh,
+		pipeWriter:  writer,
+		cmd:         cmd,
+		Prefix:      prefix,
+		OutputDir:   outputDir,
+		Interval:    interval,
+		Format:      format,
+		doneCh:      doneCh,
+		OnJPEGFrame: onJPEG,
 	}
 
 	// Goroutine 1: read MJPEG frames from ffmpeg stdout and save periodically
