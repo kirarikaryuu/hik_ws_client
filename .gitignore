@@ -8,3 +8,5 @@ output
 frames
 
 hik_ws_demo
+node_modules
+package-lock.json
