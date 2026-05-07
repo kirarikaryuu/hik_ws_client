@@ -1,6 +1,7 @@
 export { HikMediaClient } from './client.js';
 export { HikRelayServer } from './relay.js';
 export { HikConfig, parseProxyURL } from './config.js';
+export { CameraRegistry, createDefaultRegistry } from './camera-registry.js';
 export { parseSDP, SDPInfo } from './sdp.js';
 export {
   generateClientIVKey,
